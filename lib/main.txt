@@ -1,0 +1,302 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  FirebaseFirestore.instance.settings = const Settings(
+    host: 'localhost:8080',
+    sslEnabled: false,
+  );
+  runApp(MyApp());
+}
+
+// EventProvider for state management
+class EventProvider with ChangeNotifier {
+  String? selectedType;
+
+  void setSelectedType(String? type) {
+    selectedType = type;
+    notifyListeners();
+  }
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => EventProvider(),
+      child: MaterialApp(
+        title: 'Event Management App',
+        theme: ThemeData(
+          primarySwatch: Colors.blue,
+          textTheme: const TextTheme(
+            bodyLarge: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w600),
+            bodyMedium: TextStyle(fontSize: 14.0),
+          ),
+        ),
+        home: EventListScreen(),
+      ),
+    );
+  }
+}
+
+class EventListScreen extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<EventProvider>(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Events'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: DropdownButton<String>(
+              value: provider.selectedType,
+              hint: const Text("Filter by Type", style: TextStyle(color: Colors.black)),
+              items: <String>["Conference", "Workshop", "Webinar"]
+                  .map((type) => DropdownMenuItem(value: type, child: Text(type)))
+                  .toList(),
+              onChanged: (value) {
+                provider.setSelectedType(value);
+              },
+              underline: Container(),
+              dropdownColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+      body: StreamBuilder(
+        stream: provider.selectedType == null
+            ? FirebaseFirestore.instance.collection('events').snapshots()
+            : FirebaseFirestore.instance
+                .collection('events')
+                .where('eventType', isEqualTo: provider.selectedType)
+                .snapshots(),
+        builder: (context, AsyncSnapshot<QuerySnapshot> snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return const Center(child: Text("Error loading events"));
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text("No events available"));
+          }
+          final events = snapshot.data!.docs;
+          return ListView.separated(
+            itemCount: events.length,
+            separatorBuilder: (context, index) => const Divider(),
+            itemBuilder: (context, index) {
+              final event = events[index];
+              return ListTile(
+                leading: const Icon(Icons.event, color: Colors.blue),
+                title: Text(event['title'], style: Theme.of(context).textTheme.bodyLarge),
+                subtitle: Text(event['description'], style: Theme.of(context).textTheme.bodyMedium),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => EventDetailScreen(event.id),
+                    ),
+                  );
+                },
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => CreateEditEventScreen(),
+            ),
+          );
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+class EventDetailScreen extends StatelessWidget {
+  final String eventId;
+
+  EventDetailScreen(this.eventId);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Event Details')),
+      body: FutureBuilder<DocumentSnapshot>(
+        future: FirebaseFirestore.instance.collection('events').doc(eventId).get(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return const Center(child: Text("Error loading event details"));
+          }
+          if (!snapshot.hasData || !snapshot.data!.exists) {
+            return const Center(child: Text("Event not found"));
+          }
+          final event = snapshot.data!.data() as Map<String, dynamic>;
+          return Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("Title: ${event['title']}", style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: 10),
+                Text("Description: ${event['description']}"),
+                const SizedBox(height: 10),
+                Text("Date: ${event['date']}"),
+                const SizedBox(height: 10),
+                Text("Location: ${event['location']}"),
+                const SizedBox(height: 10),
+                Text("Organizer: ${event['organizer']}"),
+                const SizedBox(height: 10),
+                Text("Type: ${event['eventType']}"),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    ElevatedButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => CreateEditEventScreen(eventId: eventId),
+                          ),
+                        );
+                      },
+                      child: const Text("Edit Event"),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                      onPressed: () async {
+                        try {
+                          await FirebaseFirestore.instance.collection('events').doc(eventId).delete();
+                          Navigator.pop(context);
+                        } catch (e) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text("Error deleting event: $e")),
+                          );
+                        }
+                      },
+                      child: const Text("Delete Event"),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class CreateEditEventScreen extends StatefulWidget {
+  final String? eventId;
+
+  CreateEditEventScreen({this.eventId});
+
+  @override
+  _CreateEditEventScreenState createState() => _CreateEditEventScreenState();
+}
+
+class _CreateEditEventScreenState extends State<CreateEditEventScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _titleController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _locationController = TextEditingController();
+  final _organizerController = TextEditingController();
+  String? _eventType;
+  DateTime? _date;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.eventId != null) {
+      FirebaseFirestore.instance.collection('events').doc(widget.eventId).get().then((doc) {
+        final data = doc.data()!;
+        _titleController.text = data['title'];
+        _descriptionController.text = data['description'];
+        _locationController.text = data['location'];
+        _organizerController.text = data['organizer'];
+        _eventType = data['eventType'];
+        _date = DateTime.parse(data['date']);
+        setState(() {});
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.eventId == null ? "Create Event" : "Edit Event")),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              TextFormField(controller: _titleController, decoration: const InputDecoration(labelText: "Title")),
+              TextFormField(controller: _descriptionController, decoration: const InputDecoration(labelText: "Description")),
+              TextFormField(controller: _locationController, decoration: const InputDecoration(labelText: "Location")),
+              TextFormField(controller: _organizerController, decoration: const InputDecoration(labelText: "Organizer")),
+              DropdownButtonFormField(
+                value: _eventType,
+                decoration: const InputDecoration(labelText: "Event Type"),
+                items: ["Conference", "Workshop", "Webinar"].map((type) {
+                  return DropdownMenuItem(value: type, child: Text(type));
+                }).toList(),
+                onChanged: (value) {
+                  setState(() {
+                    _eventType = value as String;
+                  });
+                },
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (_formKey.currentState!.validate()) {
+                    try {
+                      final event = {
+                        "title": _titleController.text,
+                        "description": _descriptionController.text,
+                        "location": _locationController.text,
+                        "organizer": _organizerController.text,
+                        "eventType": _eventType,
+                        "date": _date?.toIso8601String(),
+                      };
+                      if (widget.eventId == null) {
+                        await FirebaseFirestore.instance.collection('events').add(event);
+                      } else {
+                        await FirebaseFirestore.instance.collection('events').doc(widget.eventId).update(event);
+                      }
+                      Navigator.pop(context);
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text("Error saving event: $e")),
+                      );
+                    }
+                  }
+                },
+                child: const Text("Save"),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
